@@ -1,9 +1,11 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-
+import math
 class vec3:
     def __init__(self, data, device='cuda'):
+        if isinstance(data, vec3): 
+            self.vect = data.vect.to(device)
         if isinstance(data, torch.Tensor):
             self.vect = data
         elif isinstance(data, np.ndarray):
@@ -51,21 +53,57 @@ class vec3:
     def to_array(self):
         return self.vect.detach().cpu().numpy()
 
-#initializing vec3
-class Material:
+#initializing vec3class Material:
     def __init__(self, color, roughness, specularity, em_color, em_strength, ir, reflectiveness):
         self.color = color
         self.roughness = roughness
         self.specularity = specularity
         self.em_color = em_color
-        self.em_strenght = em_strength
+        self.em_strength = em_strength  
         self.reflectiveness = reflectiveness
         self.ir = ir
-        
+
+class Ray:
+    def __init__(self, origin, direction):
+        self.origin = vec3(origin)
+        self.direction = vec3(direction).normalize()  # Always normalize ray direction!
+
+    def at(self, t):
+        return self.origin + self.direction * t  # Scalar multiplication, not dot product
+
 class Objects:
     class Sphere:
         def __init__(self, radius, center, material):
             self.radius = radius
-            self.center = center
+            self.center = vec3(center)
             self.material = material
+
+        def interact(self, ray: Ray):
+            oc = ray.origin - self.center
+            a = ray.direction.dot(ray.direction)  # should be 1 if normalized, but safe to keep
+            b = 2.0 * oc.dot(ray.direction)
+            c = oc.dot(oc) - self.radius * self.radius
+
+            discriminant = b ** 2 - 4 * a * c  # Use power operator ** not ^
+
+            if discriminant < 0:
+                return None  # No intersection
+
+            sqrt_disc = torch.sqrt(discriminant)
+
+            # Numerically stable quadratic roots
+            q = -0.5 * (b + torch.sign(b) * sqrt_disc)
+            t1 = q / a
+            t2 = c / q
+
+            # Sort and choose smallest positive t
+            t_near = min(t1, t2)
+            t_far = max(t1, t2)
+
+            if t_near > 1e-6:
+                return t_near
+            elif t_far > 1e-6:
+                return t_far
+            else:
+                return None  # Intersection behind the ray origin
         
