@@ -52,3 +52,20 @@ class vec3:
         return self.vect.detach().cpu().numpy()
 
 #initializing vec3
+class Material:
+    def __init__(self, color, roughness, specularity, em_color, em_strength, ir, reflectiveness):
+        self.color = color
+        self.roughness = roughness
+        self.specularity = specularity
+        self.em_color = em_color
+        self.em_strenght = em_strength
+        self.reflectiveness = reflectiveness
+        self.ir = ir
+        
+class Objects:
+    class Sphere:
+        def __init__(self, radius, center, material):
+            self.radius = radius
+            self.center = center
+            self.material = material
+        
