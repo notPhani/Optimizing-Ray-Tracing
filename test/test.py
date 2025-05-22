@@ -3,14 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class vec3:
-    def __init__(self, data):
+    def __init__(self, data, device='cuda'):
         if isinstance(data, torch.Tensor):
             self.vect = data
         elif isinstance(data, np.ndarray):
-            self.vect = torch.tensor(data, dtype=torch.float32)
+            self.vect = torch.tensor(data, dtype=torch.float32,device=device)
         else:
             try:
-                self.vect = torch.tensor(data, dtype=torch.float32)
+                self.vect = torch.tensor(data, dtype=torch.float32,device=device)
             except Exception as e:
                 raise TypeError(f"Expected numpy array, torch tensor, or list-like object. Got {type(data)}") from e
 
@@ -47,3 +47,4 @@ class vec3:
 
     def __eq__(self, other):
         return torch.allclose(self.vect, other.vect, atol=1e-6)
+
