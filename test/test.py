@@ -47,4 +47,8 @@ class vec3:
 
     def __eq__(self, other):
         return torch.allclose(self.vect, other.vect, atol=1e-6)
+    
+    def to_array(self):
+        return self.vect.detach().cpu().numpy()
 
+#initializing vec3
