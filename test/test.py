@@ -138,19 +138,35 @@ class Camera:
 
 class Illumination:
     class Light:
-        def __init__(self, center, radius, color, strength, ):
-            self.center = center
-            self.radius = radius
-            self.strength =  strength
-            self.color = color
-            self.material = Material([0,0,0],0,0,0,self.strength,self.color,0)
-            self.light = Object.Sphere(self.center, self.radius, self.material)
+        def __init__(self, center, radius, color, strength):
+            self.center = torch.tensor(center, dtype=torch.float32, device='cuda')
+            self.radius = torch.tensor(radius, dtype=torch.float32, device='cuda')
+            self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
+            self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
+            
+            # Create emissive material
+            self.material = Material(
+                color=[0.0, 0.0, 0.0],        # Black base (pure emissive)
+                roughness=0.0,
+                metallic=0.0,
+                specularity=0.0,
+                em_strength=self.strength.item(),
+                em_color=self.color.tolist(),
+                ir=1.0
+            )
+            
+            # Create sphere representation (batch-compatible)
+            self.light = Object.Sphere(
+                centers=self.center.unsqueeze(0),  # (1, 3)
+                radii=self.radius.unsqueeze(0),    # (1,)
+                materials=[self.material]
+            )
 
     class dirLight:
         def __init__(self, position, direction, color, strength):
             self.position = torch.tensor(position, dtype=torch.float32, device='cuda')
             self.direction = torch.tensor(direction, dtype=torch.float32, device='cuda')
+            self.direction = self.direction / (torch.norm(self.direction) + 1e-8)  # Normalize
             self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
             self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
-
 
