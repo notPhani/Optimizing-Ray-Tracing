@@ -1,6 +1,6 @@
 import torch
 import time
-
+import matplotlib.pyplot as plt
 def normalize(v):
     """Normalize a tensor of vectors along the last dimension"""
     return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
@@ -180,7 +180,7 @@ import matplotlib.pyplot as plt
 
 
 
-def trace(scene, camera, light_pos, width=1920, height=1920):
+def trace(scene, camera, light_pos, width=100, height=100):
     # Generate camera rays
     ray_batch = camera.CreateRayBffr(width, height, "persp")
     
@@ -252,10 +252,9 @@ cam = Camera(
 
 # Light position (x, y, z)
 light_pos = torch.tensor([5, 5, 0], device='cuda')
-
-# Render the scene
+start = time.time()
 image = trace(scene, cam, light_pos)
-
+print(f"{time.time()-start}")
 # Display the result
 plt.figure(figsize=(10, 6))
 plt.imshow(image)
