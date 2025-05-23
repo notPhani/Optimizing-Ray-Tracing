@@ -103,5 +103,34 @@ class Object:
                 material_idx=closest_idx,
                 normal=hit_normals
             )
-        
 
+class Camera:
+    def __init__(self, origin, look_at, fov, aspect):
+        self.origin = torch.tensor(origin, dtype=torch.float32, device='cuda')
+        self.look_at = torch.tensor(look_at, dtype=torch.float32, device='cuda')
+        self.fov = torch.tensor(fov, dtype=torch.float32, device='cuda')
+        self.aspect = torch.tensor(aspect, dtype=torch.float32, device='cuda')
+
+    def generate_rays(self, width, height):
+        # Pixel grid in normalized screen space [-1, 1]
+        x = torch.linspace(-1, 1, width, device='cuda')
+        y = torch.linspace(-1/self.aspect, 1/self.aspect, height, device='cuda')
+        grid_x, grid_y = torch.meshgrid(x, y, indexing='xy')  # (W, H)
+
+        # Compute ray directions based on FOV
+        focal = 1.0 / torch.tan(torch.deg2rad(self.fov / 2))
+        dirs = torch.stack([
+            grid_x,
+            grid_y,
+            -torch.ones_like(grid_x) * focal  # Negative Z for forward direction
+        ], dim=-1)  # (W, H, 3)
+
+        # Rotate directions to point towards look_at
+        forward = (self.look_at - self.origin).normalize()
+        # ... (compute right/up vectors and rotation matrix here) ...
+
+        # Flatten to (W*H, 3) for RayBatch
+        dirs = dirs.reshape(-1, 3)
+        return RayBatch(origins=self.origin.expand(dirs.shape), directions=dirs)
+
+        
