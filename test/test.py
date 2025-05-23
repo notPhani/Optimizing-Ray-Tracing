@@ -15,6 +15,9 @@ class vec3:
                 self.vect = torch.tensor(data, dtype=torch.float32,device=device)
             except Exception as e:
                 raise TypeError(f"Expected numpy array, torch tensor, or list-like object. Got {type(data)}") from e
+        
+        if self.vect.ndim == 1 and self.vect.shape[0] == 3:
+            self.vect = self.vect.unsqueeze(0)
 
         if self.vect.shape[-1] != 3:
             raise ValueError("vec3 expects a 3D vector.")
@@ -52,8 +55,12 @@ class vec3:
     
     def to_array(self):
         return self.vect.detach().cpu().numpy()
+    
+    def shape(self):
+        return self.vect.shape
 
 #initializing vec3class Material:
+class Material:
     def __init__(self, color, roughness, specularity, em_color, em_strength, ir, reflectiveness):
         self.color = color
         self.roughness = roughness
@@ -78,13 +85,13 @@ class Objects:
             self.center = vec3(center)
             self.material = material
 
-        def interact(self, ray: Ray):
-            oc = ray.origin - self.center
-            a = ray.direction.dot(ray.direction)  # should be 1 if normalized, but safe to keep
-            b = 2.0 * oc.dot(ray.direction)
+        def interact(self, ray_origin, ray_direction):
+            oc = ray_origin - self.center
+            a = ray_direction.dot(ray_direction)
+            b = 2.0 * oc.dot(ray_direction)
             c = oc.dot(oc) - self.radius * self.radius
 
-            discriminant = b ** 2 - 4 * a * c  # Use power operator ** not ^
+            discriminant = b ** 2 - 4 * a * c
 
             if discriminant < 0:
                 return None  # No intersection
@@ -106,4 +113,5 @@ class Objects:
                 return t_far
             else:
                 return None  # Intersection behind the ray origin
-        
+
+
