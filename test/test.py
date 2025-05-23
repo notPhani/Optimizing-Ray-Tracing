@@ -37,7 +37,87 @@ class Material:
             f"em_strength={self.em_strength},\n em_color={self.em_color.tolist()},\n "
             f"ir={self.ir})"
         )
+    
+class HitInfo:
+    def __init__(self, t, material_idx, normal):
+        self.t = t            # (B,) hit distances
+        self.material_idx = material_idx  # (B,) material indices
+        self.normal = normal  # (B, 3) surface normals
 
 class Object:
     class Sphere:
-        pass
+        def __init__(self, centers, radii, materials):
+            """
+            Batch-friendly sphere storage
+            centers: (N, 3) tensor
+            radii: (N,) tensor
+            materials: list of Material objects (length N)
+            """
+            self.centers = centers.to('cuda')  # (N, 3)
+            self.radii = radii.to('cuda')      # (N,)
+            self.materials = materials
+
+        @staticmethod
+        def intersect(self,ray_batch):
+            """
+            Batched intersection for ALL spheres vs ALL rays
+            Returns: HitInfo with (t, material_idx, hit_normal)
+            """
+            # ray_batch.origins: (B, 3)
+            # ray_batch.directions: (B, 3)
+            B = ray_batch.origins.shape[0]
+            N = self.centers.shape[0]
+
+            # Vectorized intersection math 🔥
+            oc = ray_batch.origins[:, None] - self.centers[None]  # (B, N, 3)
+            a = torch.einsum('bi,bi->b', ray_batch.directions, ray_batch.directions)  # (B,)
+            b = 2 * torch.einsum('bni,bi->bn', oc, ray_batch.directions)  # (B, N)
+            c = torch.einsum('bni,bni->bn', oc, oc) - (self.radii**2)[None]  # (B, N)
+
+            discriminant = b**2 - 4 * a[:, None] * c
+            hit_mask = discriminant > 1e-6  # (B, N)
+            sqrt_disc = torch.sqrt(discriminant[hit_mask])
+            q = -0.5 * (b[hit_mask] + torch.sign(b[hit_mask]) * sqrt_disc)
+            a_expanded = a.unsqueeze(1).expand(-1, N)  # (B,) → (B, N)
+            t1 = q / a_expanded[hit_mask]  # Now works with (B, N) mask
+
+            t2 = c[hit_mask] / q
+            
+            # Find smallest positive t
+            t_vals = torch.where((t1 > 1e-6) & (t1 < t2), t1, t2)
+            t_vals = torch.where(t_vals < 1e-6, float('inf'), t_vals)
+
+            # Build hit info
+            hit_t = torch.full((B, N), float('inf'), device='cuda')
+            hit_t[hit_mask] = t_vals
+            
+            # Find closest hit per ray
+            closest_t, closest_idx = torch.min(hit_t, dim=1)  # (B,)
+            
+            # Calculate hit normals
+            hit_points = ray_batch.at(closest_t)  # (B, 3)
+            hit_normals = (hit_points - self.centers[closest_idx]) / self.radii[closest_idx][:, None]
+            
+            return HitInfo(
+                t=closest_t,
+                material_idx=closest_idx,
+                normal=hit_normals
+            )
+        
+
+
+# Create 3 spheres with different materials
+spheres = Object.Sphere(
+    centers=torch.tensor([
+        [0, 0, 5],    # Red sphere at z=5
+        [2, 2, 10],   # Green sphere at (2,2,10)
+        [-2, -2, 8]   # Blue sphere at (-2,-2,8)
+    ], device='cuda'),
+    radii=torch.tensor([1.0, 1.5, 0.5], device='cuda'),
+    materials=[
+        Material(color=(1,0,0), roughness=0.2, metallic=0.5, specularity=0.8, em_strength=0, em_color=(0,0,0), ir=1.5),
+        Material(color=(0,1,0), roughness=0.3, metallic=0.3, specularity=0.5, em_strength=0, em_color=(0,0,0), ir=1.3),
+        Material(color=(0,0,1), roughness=0.1, metallic=0.7, specularity=0.9, em_strength=0, em_color=(0,0,0), ir=1.7)
+    ]
+)
+
