@@ -105,19 +105,3 @@ class Object:
             )
         
 
-
-# Create 3 spheres with different materials
-spheres = Object.Sphere(
-    centers=torch.tensor([
-        [0, 0, 5],    # Red sphere at z=5
-        [2, 2, 10],   # Green sphere at (2,2,10)
-        [-2, -2, 8]   # Blue sphere at (-2,-2,8)
-    ], device='cuda'),
-    radii=torch.tensor([1.0, 1.5, 0.5], device='cuda'),
-    materials=[
-        Material(color=(1,0,0), roughness=0.2, metallic=0.5, specularity=0.8, em_strength=0, em_color=(0,0,0), ir=1.5),
-        Material(color=(0,1,0), roughness=0.3, metallic=0.3, specularity=0.5, em_strength=0, em_color=(0,0,0), ir=1.3),
-        Material(color=(0,0,1), roughness=0.1, metallic=0.7, specularity=0.9, em_strength=0, em_color=(0,0,0), ir=1.7)
-    ]
-)
-
