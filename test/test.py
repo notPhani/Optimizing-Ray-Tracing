@@ -180,7 +180,7 @@ import matplotlib.pyplot as plt
 
 
 
-def trace(scene, camera, light_pos, width=100, height=100):
+def trace(scene, camera, light_pos, width, height):
     # Generate camera rays
     ray_batch = camera.CreateRayBffr(width, height, "persp")
     
@@ -252,12 +252,12 @@ cam = Camera(
 
 # Light position (x, y, z)
 light_pos = torch.tensor([5, 5, 0], device='cuda')
-start = time.time()
-image = trace(scene, cam, light_pos)
-print(f"{time.time()-start}")
-# Display the result
-plt.figure(figsize=(10, 6))
-plt.imshow(image)
-plt.axis('off')
-plt.title('Basic Ray Tracing with Diffuse Lighting')
+plot = []
+for i in range(100,1080,10):
+    start = time.time()
+    image = trace(scene, cam, light_pos,i,i)
+    print(f"{i} : {time.time()-start}",end="\r")
+    plot.append(time.time()-start)
+
+plt.plot(plot)
 plt.show()
