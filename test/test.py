@@ -1,5 +1,5 @@
 import torch
-
+import time
 class RayBatch:
     def __init__(self, origins, directions, device="cuda"):
         self.origins = torch.as_tensor(origins, device=device, dtype=torch.float32)
@@ -57,7 +57,6 @@ class Object:
             self.radii = radii.to('cuda')      # (N,)
             self.materials = materials
 
-        @staticmethod
         def intersect(self,ray_batch):
             """
             Batched intersection for ALL spheres vs ALL rays
@@ -111,26 +110,47 @@ class Camera:
         self.fov = torch.tensor(fov, dtype=torch.float32, device='cuda')
         self.aspect = torch.tensor(aspect, dtype=torch.float32, device='cuda')
 
-    def generate_rays(self, width, height):
-        # Pixel grid in normalized screen space [-1, 1]
-        x = torch.linspace(-1, 1, width, device='cuda')
-        y = torch.linspace(-1/self.aspect, 1/self.aspect, height, device='cuda')
+    def CreateRayBffr(self, width, height, mode):
+        # Pixel grid with Y going from 1 (top) to -1 (bottom)
+        x = torch.linspace(-1, 1, width, device='cuda') * self.aspect
+        y = torch.linspace(1, -1, height, device='cuda')  # FIXED: Top to bottom
         grid_x, grid_y = torch.meshgrid(x, y, indexing='xy')  # (W, H)
 
-        # Compute ray directions based on FOV
-        focal = 1.0 / torch.tan(torch.deg2rad(self.fov / 2))
-        dirs = torch.stack([
-            grid_x,
-            grid_y,
-            -torch.ones_like(grid_x) * focal  # Negative Z for forward direction
-        ], dim=-1)  # (W, H, 3)
+        # Camera basis vectors (ensure looking along -Z)
+        forward = self.look_at - self.origin
+        forward = forward / (torch.norm(forward) + 1e-8)
+        up = torch.tensor([0, 1, 0], dtype=torch.float32, device='cuda')
+        right = torch.linalg.cross(forward, up)
+        right = right / (torch.norm(right) + 1e-8)
+        up = torch.linalg.cross(right, forward)
+        up = up / (torch.norm(up) + 1e-8)
 
-        # Rotate directions to point towards look_at
-        forward = (self.look_at - self.origin).normalize()
-        # ... (compute right/up vectors and rotation matrix here) ...
-
-        # Flatten to (W*H, 3) for RayBatch
-        dirs = dirs.reshape(-1, 3)
-        return RayBatch(origins=self.origin.expand(dirs.shape), directions=dirs)
-
+        if mode == "orth":
+            origins = self.origin + grid_x[..., None]*right*width/2 + grid_y[..., None]*up*height/2
+            directions = forward.expand_as(origins)
+        elif mode == "persp":
+            f = 1 / torch.deg2rad(self.fov/2).tan()
+            directions = grid_x[..., None]*right + grid_y[..., None]*up + forward*f  # FIXED: +forward
+            directions = directions / directions.norm(dim=-1, keepdim=True)
+            origins = self.origin.expand(directions.shape)
         
+        return RayBatch(origins.reshape(-1, 3), directions.reshape(-1, 3))
+
+class Illumination:
+    class Light:
+        def __init__(self, center, radius, color, strength, ):
+            self.center = center
+            self.radius = radius
+            self.strength =  strength
+            self.color = color
+            self.material = Material([0,0,0],0,0,0,self.strength,self.color,0)
+            self.light = Object.Sphere(self.center, self.radius, self.material)
+
+    class dirLight:
+        def __init__(self, position, direction, color, strength):
+            self.position = torch.tensor(position, dtype=torch.float32, device='cuda')
+            self.direction = torch.tensor(direction, dtype=torch.float32, device='cuda')
+            self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
+            self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
+
+
