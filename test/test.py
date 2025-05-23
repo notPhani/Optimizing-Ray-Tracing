@@ -1,5 +1,10 @@
 import torch
 import time
+
+def normalize(v):
+    """Normalize a tensor of vectors along the last dimension"""
+    return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
+
 class RayBatch:
     def __init__(self, origins, directions, device="cuda"):
         self.origins = torch.as_tensor(origins, device=device, dtype=torch.float32)
@@ -170,3 +175,90 @@ class Illumination:
             self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
             self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
 
+import torch
+import matplotlib.pyplot as plt
+
+
+
+def trace(scene, camera, light_pos, width=1920, height=1920):
+    # Generate camera rays
+    ray_batch = camera.CreateRayBffr(width, height, "persp")
+    
+    # Intersect rays with scene objects
+    hit_info = scene.intersect(ray_batch)
+    
+    # Initialize image with black background
+    image = torch.zeros((height, width, 3), device='cuda')
+    
+    # Get hit mask (where rays actually hit something)
+    hit_mask = hit_info.t < float('inf')
+    
+    if hit_mask.any():
+        # Get hit components --------------------------------------------------
+        hit_origins = ray_batch.origins[hit_mask]
+        hit_directions = ray_batch.directions[hit_mask]
+        hit_t = hit_info.t[hit_mask]
+        
+        # Calculate hit points ------------------------------------------------
+        hit_points = hit_origins + hit_directions * hit_t.unsqueeze(-1)
+        
+        # Get normals and materials -------------------------------------------
+        hit_normals = hit_info.normal[hit_mask]
+        material_colors = torch.stack([
+            scene.materials[i].color 
+            for i in hit_info.material_idx[hit_mask]
+        ]).cuda()
+        
+        # Lighting calculations -----------------------------------------------
+        light_dir = normalize(light_pos - hit_points)
+        
+        # Ambient (10% of material color)
+        ambient = 0.1 * material_colors
+        
+        # Diffuse (Lambertian)
+        diffuse_strength = torch.clamp(
+            (hit_normals * light_dir).sum(dim=-1, keepdim=True), 
+            min=0.0,
+        ).cuda()
+        diffuse = material_colors * diffuse_strength
+        
+        # Combine and write to image
+        image.view(-1, 3)[hit_mask] = torch.clamp(ambient + diffuse, 0.0, 1.0)
+    
+    return image.cpu().numpy()
+
+# Create test scene
+mat_red = Material(color=[0,0.5,0.5], roughness=0.2, metallic=0.5, specularity=0.8, 
+                  em_strength=0, em_color=[0,0,0], ir=1.5)
+mat_green = Material(color=[1.0, 0.843, 0.0], roughness=0.3, metallic=0.3, specularity=0.5, 
+                    em_strength=0, em_color=[0,0,0], ir=1.3)
+
+scene = Object.Sphere(
+    centers=torch.tensor([
+        [0, 0, 5],    # Red sphere
+        [2, 2, 10]    # Green sphere
+    ], device='cuda'),
+    radii=torch.tensor([1.0, 1.5], device='cuda'),
+    materials=[mat_red, mat_green]
+)
+
+# Set up camera
+cam = Camera(
+    origin=[0, 0, 0],
+    look_at=[0, 0, 1],
+    fov=90,
+    aspect=1
+)
+
+# Light position (x, y, z)
+light_pos = torch.tensor([5, 5, 0], device='cuda')
+
+# Render the scene
+image = trace(scene, cam, light_pos)
+
+# Display the result
+plt.figure(figsize=(10, 6))
+plt.imshow(image)
+plt.axis('off')
+plt.title('Basic Ray Tracing with Diffuse Lighting')
+plt.show()
