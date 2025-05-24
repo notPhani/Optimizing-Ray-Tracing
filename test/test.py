@@ -261,3 +261,4 @@ for i in range(100,1080,10):
 
 plt.plot(plot)
 plt.show()
+plt.savefig("ray_bench.png")
