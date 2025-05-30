@@ -23,12 +23,11 @@ class RayBatch:
     
     def trace(self, scene, num_bounces, max_bounces):
         hit_info = scene.interact(self)
-        color = torch.zeros_like(self.origins)
+        color = torch.zeros_like(self.origins, dtype=torch.float32, device='cuda')
         miss_mask = (hit_info.t == float('inf'))
-        #color[miss_mask] = scene.background_color
         hit_mask = ~miss_mask
-        return miss_mask
-    
+        color[miss_mask] = scene.background_color.to(color.dtype)
+        
     @property
     def shape(self):
         return self.origins.shape
@@ -187,7 +186,7 @@ class Illumination:
             self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
 
 class Scene:
-    def __init__(self, objects, lights, background_color = torch.tensor([0,0,0])):
+    def __init__(self, objects, lights, background_color = torch.tensor([0.0,0.0,0.0],device='cuda')):
         self.background_color = background_color
         self.objects = objects
         self.lights = lights
@@ -197,7 +196,7 @@ class Scene:
 
 # Set up a simple scene with a sphere at the origin
 sphere_material = Material(
-    color=[1, 0, 0], roughness=0.1, metallic=0.0, specularity=0.0,
+    color=[0, 0.5, 0.5], roughness=0.1, metallic=0.0, specularity=0.0,
     em_strength=0.0, em_color=[0, 0, 0], ir=1.0
 )
 sphere = Object.Sphere(
@@ -208,7 +207,7 @@ sphere = Object.Sphere(
 scene = Scene(objects=sphere, lights=[], background_color=torch.tensor([0, 0, 0], device='cuda'))
 
 # Set your desired image size
-width, height = 1080, 1080
+width, height = 1000,1000
 
 
 camera = Camera([0,0,5], [0,0,0], 90, 1)
@@ -219,7 +218,7 @@ ray_batch = camera.CreateRayBffr(width, height, mode="persp")
 start =time.time()
 hit_mask = ray_batch.trace(scene, num_bounces=1, max_bounces=1)
 print(time.time()-start)
-hit_mask_img = hit_mask.reshape(height, width).cpu().numpy()
+hit_mask_img = hit_mask.reshape(height, width,3).cpu().numpy()
 plt.imshow(hit_mask_img, cmap='gray')
-plt.title('Ray Hit Mask (White = Hit, Black = Miss)')
+plt.title('Ray Hit Mask (white= Hit, Black = Miss)')
 plt.show()
