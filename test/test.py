@@ -1,6 +1,8 @@
 import torch
 import time
 import matplotlib.pyplot as plt
+import numpy as np
+
 def normalize(v):
     """Normalize a tensor of vectors along the last dimension"""
     return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
@@ -19,12 +21,23 @@ class RayBatch:
     def __repr__(self):
         return f"RayBatch(shape={self.origins.shape})"
     
+    def trace(self, scene, num_bounces, max_bounces):
+        hit_info = scene.interact(self)
+        color = torch.zeros_like(self.origins)
+        miss_mask = (hit_info.t == float('inf'))
+        #color[miss_mask] = scene.background_color
+        hit_mask = ~miss_mask
+        return miss_mask
+    
     @property
     def shape(self):
         return self.origins.shape
     
     def to(self, device):
         return RayBatch(self.origins.to(device), self.directions.to(device))
+    
+    
+    
 class Material:
     def __init__(self, color, roughness, metallic, specularity, em_strength, em_color, ir):
         self.color = torch.tensor(color, dtype=torch.float32)
@@ -71,8 +84,6 @@ class Object:
             # ray_batch.directions: (B, 3)
             B = ray_batch.origins.shape[0]
             N = self.centers.shape[0]
-
-            # Vectorized intersection math 🔥
             oc = ray_batch.origins[:, None] - self.centers[None]  # (B, N, 3)
             a = torch.einsum('bi,bi->b', ray_batch.directions, ray_batch.directions)  # (B,)
             b = 2 * torch.einsum('bni,bi->bn', oc, ray_batch.directions)  # (B, N)
@@ -175,90 +186,40 @@ class Illumination:
             self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
             self.strength = torch.tensor(strength, dtype=torch.float32, device='cuda')
 
-import torch
-import matplotlib.pyplot as plt
-
-
-
-def trace(scene, camera, light_pos, width, height):
-    # Generate camera rays
-    ray_batch = camera.CreateRayBffr(width, height, "persp")
+class Scene:
+    def __init__(self, objects, lights, background_color = torch.tensor([0,0,0])):
+        self.background_color = background_color
+        self.objects = objects
+        self.lights = lights
+    def interact(self, rayBatch):
+        return self.objects.intersect(rayBatch)
     
-    # Intersect rays with scene objects
-    hit_info = scene.intersect(ray_batch)
-    
-    # Initialize image with black background
-    image = torch.zeros((height, width, 3), device='cuda')
-    
-    # Get hit mask (where rays actually hit something)
-    hit_mask = hit_info.t < float('inf')
-    
-    if hit_mask.any():
-        # Get hit components --------------------------------------------------
-        hit_origins = ray_batch.origins[hit_mask]
-        hit_directions = ray_batch.directions[hit_mask]
-        hit_t = hit_info.t[hit_mask]
-        
-        # Calculate hit points ------------------------------------------------
-        hit_points = hit_origins + hit_directions * hit_t.unsqueeze(-1)
-        
-        # Get normals and materials -------------------------------------------
-        hit_normals = hit_info.normal[hit_mask]
-        material_colors = torch.stack([
-            scene.materials[i].color 
-            for i in hit_info.material_idx[hit_mask]
-        ]).cuda()
-        
-        # Lighting calculations -----------------------------------------------
-        light_dir = normalize(light_pos - hit_points)
-        
-        # Ambient (10% of material color)
-        ambient = 0.1 * material_colors
-        
-        # Diffuse (Lambertian)
-        diffuse_strength = torch.clamp(
-            (hit_normals * light_dir).sum(dim=-1, keepdim=True), 
-            min=0.0,
-        ).cuda()
-        diffuse = material_colors * diffuse_strength
-        
-        # Combine and write to image
-        image.view(-1, 3)[hit_mask] = torch.clamp(ambient + diffuse, 0.0, 1.0)
-    
-    return image.cpu().numpy()
 
-# Create test scene
-mat_red = Material(color=[0,0.5,0.5], roughness=0.2, metallic=0.5, specularity=0.8, 
-                  em_strength=0, em_color=[0,0,0], ir=1.5)
-mat_green = Material(color=[1.0, 0.843, 0.0], roughness=0.3, metallic=0.3, specularity=0.5, 
-                    em_strength=0, em_color=[0,0,0], ir=1.3)
-
-scene = Object.Sphere(
-    centers=torch.tensor([
-        [0, 0, 5],    # Red sphere
-        [2, 2, 10]    # Green sphere
-    ], device='cuda'),
-    radii=torch.tensor([1.0, 1.5], device='cuda'),
-    materials=[mat_red, mat_green]
+# Set up a simple scene with a sphere at the origin
+sphere_material = Material(
+    color=[1, 0, 0], roughness=0.1, metallic=0.0, specularity=0.0,
+    em_strength=0.0, em_color=[0, 0, 0], ir=1.0
 )
-
-# Set up camera
-cam = Camera(
-    origin=[0, 0, 0],
-    look_at=[0, 0, 1],
-    fov=90,
-    aspect=1
+sphere = Object.Sphere(
+    centers=torch.tensor([[0.0, 0.0, 0.0]], device='cuda'),
+    radii=torch.tensor([1.0], device='cuda'),
+    materials=[sphere_material]
 )
+scene = Scene(objects=sphere, lights=[], background_color=torch.tensor([0, 0, 0], device='cuda'))
 
-# Light position (x, y, z)
-light_pos = torch.tensor([5, 5, 0], device='cuda')
-plot = []
-for i in range(100,1080,10):
-    start = time.time()
-    image = trace(scene, cam, light_pos,i,i)
-    print(f"{i} : {time.time()-start}",end="\r")
-    plot.append(time.time()-start)
+# Set your desired image size
+width, height = 1080, 1080
 
-plt.plot(plot)
+
+camera = Camera([0,0,5], [0,0,0], 90, 1)
+
+ray_batch = camera.CreateRayBffr(width, height, mode="persp")  
+
+# Now you can use ray_batch directly for intersection, shading, etc.
+start =time.time()
+hit_mask = ray_batch.trace(scene, num_bounces=1, max_bounces=1)
+print(time.time()-start)
+hit_mask_img = hit_mask.reshape(height, width).cpu().numpy()
+plt.imshow(hit_mask_img, cmap='gray')
+plt.title('Ray Hit Mask (White = Hit, Black = Miss)')
 plt.show()
-plt.savefig("ray_bench.png")
