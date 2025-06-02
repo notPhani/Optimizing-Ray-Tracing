@@ -4,9 +4,43 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 def normalize(v):
-    """Normalize a tensor of vectors along the last dimension"""
     return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
 
+class Lambertian:
+    @staticmethod
+    def offset(hit_normals, material_roughness, incoming_dirs):
+        reflected_dirs = incoming_dirs - 2*(incoming_dirs*hit_normals).sum(-1, keepdim=True)*hit_normals
+        # Create diffusion rays
+        N = hit_normals.shape[0]
+        device = hit_normals.device
+
+        u1 = torch.rand(N, device=device)
+        u2 = torch.rand(N, device=device)
+        r = torch.sqrt(u1)
+        phi = 2 * torch.pi * u2
+        x = r * torch.cos(phi)
+        y = r * torch.sin(phi)
+        z = torch.sqrt(1 - x**2 - y**2)
+        local_dirs = torch.stack([x, y, z], dim=-1)
+
+        up = torch.tensor([0.0, 1.0, 0.0], device=device).expand_as(hit_normals)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(hit_normals)
+        mask = (torch.abs(hit_normals @ torch.tensor([0.0, 1.0, 0.0], device=device)) > 0.999)
+        ref = torch.where(mask.unsqueeze(-1), alt_up, up)  # (N, 3)
+        t = torch.cross(hit_normals, ref, dim=-1)
+        t = t / (torch.norm(t, dim=-1, keepdim=True) + 1e-8)
+        b = torch.cross(hit_normals, t, dim=-1)
+
+
+        world_dirs = (local_dirs[..., 0:1] * t +
+                      local_dirs[..., 1:2] * b +
+                      local_dirs[..., 2:3] * hit_normals)
+        diffusion_dirs = world_dirs / (torch.norm(world_dirs, dim=-1, keepdim=True) + 1e-8)
+
+        blended = (1-material_roughness).unsqueeze(-1) * reflected_dirs + (material_roughness).unsqueeze(-1) * diffusion_dirs
+        return blended / (torch.norm(blended, dim=-1, keepdim=True) + 1e-8)
+
+        
 class RayBatch:
     def __init__(self, origins, directions, device="cuda"):
         self.origins = torch.as_tensor(origins, device=device, dtype=torch.float32)
@@ -20,14 +54,52 @@ class RayBatch:
     
     def __repr__(self):
         return f"RayBatch(shape={self.origins.shape})"
-    
+
     def trace(self, scene, num_bounces, max_bounces):
+
         hit_info = scene.interact(self)
         color = torch.zeros_like(self.origins, dtype=torch.float32, device='cuda')
         miss_mask = (hit_info.t == float('inf'))
         hit_mask = ~miss_mask
+
+        # Set missed rays to background color
         color[miss_mask] = scene.background_color.to(color.dtype)
-        
+
+        if hit_mask.any():
+            # Gather hit info for rays that hit something
+            hit_points = self.origins[hit_mask] + self.directions[hit_mask] * hit_info.t[hit_mask].unsqueeze(-1)
+            hit_normals = hit_info.normal[hit_mask]
+            hit_materials_idx = hit_info.material_idx[hit_mask]
+
+            # Gather material properties
+            all_roughness = torch.tensor([m.roughness for m in scene.objects.materials], device='cuda')
+            all_colors = torch.stack([m.color for m in scene.objects.materials], dim=0).to('cuda')
+            all_em_strength = torch.tensor([m.em_strength for m in scene.objects.materials], device='cuda')
+            all_em_color = torch.stack([m.em_color for m in scene.objects.materials], dim=0).to('cuda')
+
+            hit_materials_roughness = all_roughness[hit_materials_idx]
+            hit_materials_color = all_colors[hit_materials_idx]
+            hit_materials_em_strength = all_em_strength[hit_materials_idx]
+            hit_materials_em_color = all_em_color[hit_materials_idx]
+            color[hit_mask] += hit_materials_em_strength.unsqueeze(-1) * hit_materials_em_color
+
+            # If we haven't reached max bounces, spawn new rays for indirect lighting
+            if num_bounces <= max_bounces:
+                new_origins = hit_points + 1e-4 * hit_normals
+                incoming_dirs = self.directions[hit_mask]
+                new_dirs = Lambertian.offset(
+                    hit_normals=hit_normals,
+                    material_roughness=hit_materials_roughness,
+                    incoming_dirs=incoming_dirs
+                )
+                new_rays = RayBatch(new_origins, new_dirs, device='cuda')
+                # Recursive call for next bounce
+                bounce_color = new_rays.trace(scene, num_bounces + 1, max_bounces)
+                # Lambertian: multiply by albedo (material color)
+                color[hit_mask] += hit_materials_color * bounce_color
+
+        return color
+    
     @property
     def shape(self):
         return self.origins.shape
@@ -64,23 +136,11 @@ class HitInfo:
 class Object:
     class Sphere:
         def __init__(self, centers, radii, materials):
-            """
-            Batch-friendly sphere storage
-            centers: (N, 3) tensor
-            radii: (N,) tensor
-            materials: list of Material objects (length N)
-            """
             self.centers = centers.to('cuda')  # (N, 3)
             self.radii = radii.to('cuda')      # (N,)
             self.materials = materials
 
         def intersect(self,ray_batch):
-            """
-            Batched intersection for ALL spheres vs ALL rays
-            Returns: HitInfo with (t, material_idx, hit_normal)
-            """
-            # ray_batch.origins: (B, 3)
-            # ray_batch.directions: (B, 3)
             B = ray_batch.origins.shape[0]
             N = self.centers.shape[0]
             oc = ray_batch.origins[:, None] - self.centers[None]  # (B, N, 3)
@@ -193,32 +253,3 @@ class Scene:
     def interact(self, rayBatch):
         return self.objects.intersect(rayBatch)
     
-
-# Set up a simple scene with a sphere at the origin
-sphere_material = Material(
-    color=[0, 0.5, 0.5], roughness=0.1, metallic=0.0, specularity=0.0,
-    em_strength=0.0, em_color=[0, 0, 0], ir=1.0
-)
-sphere = Object.Sphere(
-    centers=torch.tensor([[0.0, 0.0, 0.0]], device='cuda'),
-    radii=torch.tensor([1.0], device='cuda'),
-    materials=[sphere_material]
-)
-scene = Scene(objects=sphere, lights=[], background_color=torch.tensor([0, 0, 0], device='cuda'))
-
-# Set your desired image size
-width, height = 1000,1000
-
-
-camera = Camera([0,0,5], [0,0,0], 90, 1)
-
-ray_batch = camera.CreateRayBffr(width, height, mode="persp")  
-
-# Now you can use ray_batch directly for intersection, shading, etc.
-start =time.time()
-hit_mask = ray_batch.trace(scene, num_bounces=1, max_bounces=1)
-print(time.time()-start)
-hit_mask_img = hit_mask.reshape(height, width,3).cpu().numpy()
-plt.imshow(hit_mask_img, cmap='gray')
-plt.title('Ray Hit Mask (white= Hit, Black = Miss)')
-plt.show()
