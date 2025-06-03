@@ -6,6 +6,33 @@ import numpy as np
 def normalize(v):
     return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
 
+class HaltonSampler:
+    def __init__(self, bases=(2, 3), permute=True, skip=20):
+        self.bases = bases
+        self.permutations = {
+            2: torch.tensor([0, 1], device='cuda'),      # Base 2 permutation
+            3: torch.tensor([0, 2, 1], device='cuda'),   # Base 3 permutation
+        } if permute else None
+        self.skip = skip
+
+    def generate(self, num_samples):
+        samples = []
+        for i in range(self.skip, num_samples + self.skip):
+            sample = []
+            for base in self.bases:
+                f = 1.0
+                n = i
+                val = 0.0
+                while n > 0:
+                    f /= base
+                    rem = n % base
+                    if self.permutations: rem = self.permutations[base][rem]
+                    val += rem * f
+                    n = n // base
+                sample.append(val - 0.5)  # Center around [-0.5, 0.5]
+            samples.append(sample)
+        return torch.tensor(samples, device='cuda') * 0.8  # Scale to [-0.4, 0.4]
+
 class Lambertian:
     @staticmethod
     def offset(hit_normals, material_roughness, incoming_dirs):
@@ -185,7 +212,8 @@ class Camera:
         self.fov = torch.tensor(fov, dtype=torch.float32, device='cuda')
         self.aspect = torch.tensor(aspect, dtype=torch.float32, device='cuda')
 
-    def CreateRayBffr(self, width, height, mode):
+    def CreateRayBffr(self, width, height, mode, sampler, sample):
+        samples = sampler.generate()
         # Pixel grid with Y going from 1 (top) to -1 (bottom)
         x = torch.linspace(-1, 1, width, device='cuda') * self.aspect
         y = torch.linspace(1, -1, height, device='cuda')  # FIXED: Top to bottom
@@ -252,4 +280,4 @@ class Scene:
         self.lights = lights
     def interact(self, rayBatch):
         return self.objects.intersect(rayBatch)
-    
+
