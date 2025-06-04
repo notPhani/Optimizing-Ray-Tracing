@@ -1,6 +1,6 @@
 # Temporary CPU version for visualization
 import numpy as np
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as
 class HaltonSamplerCPU:
     def __init__(self, bases=(2, 3), permute=True, skip=20):
         self.bases = bases

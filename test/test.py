@@ -131,8 +131,6 @@ class Lambertian:
         t = torch.cross(hit_normals, ref, dim=-1)
         t = t / (torch.norm(t, dim=-1, keepdim=True) + 1e-8)
         b = torch.cross(hit_normals, t, dim=-1)
-
-
         world_dirs = (local_dirs[..., 0:1] * t +
                       local_dirs[..., 1:2] * b +
                       local_dirs[..., 2:3] * hit_normals)
@@ -184,7 +182,55 @@ class RayBatch:
             hit_materials_em_color = all_em_color[hit_materials_idx]
             color[hit_mask] += hit_materials_em_strength.unsqueeze(-1) * hit_materials_em_color
 
+            point_lights = [l for l in scene.lights if isinstance(l, Illumination.Light)]
+            dir_lights = [l for l in scene.lights if isinstance(l, Illumination.dirLight)]
+            if point_lights:
+                light_centers = torch.stack([l.center for l in point_lights], dim=0)
+                light_colors = torch.stack([l.color for l in point_lights], dim=0)
+                light_strengths = torch.stack([l.strength for l in point_lights], dim=0)
+                light_radii = torch.stack([l.radius for l in point_lights], dim=0)
+
+                M = hit_points.shape[0]
+                L = light_centers.shape[0]
+
+                # Expand for broadcasting
+                shadow_ray_origins = hit_points.unsqueeze(1).expand(M, L, 3)
+                hn = hit_normals.unsqueeze(1).expand(M, L, 3)
+                mc = hit_materials_color.unsqueeze(1).expand(M, L, 3)
+                light_centers = light_centers.unsqueeze(0).expand(M, L, 3)
+                lcol = light_colors.unsqueeze(0).expand(M, L, 3)
+                lstr = light_strengths.unsqueeze(0).expand(M, L)
+                lr = light_radii.unsqueeze(0).expand(M, L)
+
+                shadow_ray_directions = light_centers - shadow_ray_origins
+                shadow_ray_directions = shadow_ray_directions / (torch.norm(shadow_ray_directions, dim=-1, keepdim=True) + 1e-8)
+                shadow_origins = shadow_ray_origins + 1e-4 * hn
+                shadow_rays = RayBatch(shadow_origins.reshape(-1, 3), shadow_ray_directions.reshape(-1, 3), device='cuda')
+                shadow_hits = scene.interact(shadow_rays)
+                shadow_t = shadow_hits.t.reshape(M, L)
+                shadow_miss = (shadow_t == float('inf'))
+                shadow_free = ~shadow_miss
+                shadow_free = (shadow_t > (torch.norm(light_centers - shadow_ray_origins, dim=-1) - light_radii - 1e-3))
+
+                lambert = torch.clamp((hn * shadow_ray_directions).sum(-1), min=0.0)  # (M, L)
+
+                # Only add light if not shadowed
+                direct_color = (
+                    shadow_free.unsqueeze(-1) *
+                    lcol * lstr.unsqueeze(-1) *
+                    lambert.unsqueeze(-1) *
+                    mc
+                ).sum(dim=1)  # (M, 3)
+
+                color[hit_mask] += direct_color
+
+            else:
+                light_centers = torch.stack([l.center for l in dir_lights], dim=0)
+                light_colors = torch.stack([l.color for l in dir_lights], dim=0)
+                light_strengths = torch.stack([l.strength for l in dir_lights], dim=0)
+
             # If we haven't reached max bounces, spawn new rays for indirect lighting
+
             if num_bounces <= max_bounces:
                 new_origins = hit_points + 1e-4 * hit_normals
                 incoming_dirs = self.directions[hit_mask]
@@ -345,7 +391,7 @@ class Illumination:
 
     class dirLight:
         def __init__(self, position, direction, color, strength):
-            self.position = torch.tensor(position, dtype=torch.float32, device='cuda')
+            self.center = torch.tensor(position, dtype=torch.float32, device='cuda')
             self.direction = torch.tensor(direction, dtype=torch.float32, device='cuda')
             self.direction = self.direction / (torch.norm(self.direction) + 1e-8)  # Normalize
             self.color = torch.tensor(color, dtype=torch.float32, device='cuda')
@@ -359,4 +405,46 @@ class Scene:
     def interact(self, rayBatch):
         return self.objects.intersect(rayBatch)
 
+sphere_material = Material(
+    color=[0.9, 0.2, 0.2], roughness=0, metallic=0.0, specularity=0.0,
+    em_strength=0.0, em_color=[0, 0, 0], ir=1.0
+)
+sphere_material1 = Material(
+    color=[0.2, 0.7, 0.9], roughness=0.2, metallic=0.0, specularity=0.0,
+    em_strength=0.0, em_color=[0, 0, 0], ir=1.0
+)
+
+sphere = Object.Sphere(
+    centers=torch.tensor([
+        [0.0, 0.0, 0.0],        # small sphere
+        [0.0, -999.0, 0.0]     # big ground sphere
+    ], device='cuda'),
+    radii=torch.tensor([1.0, 9.0], device='cuda'),
+    materials=[sphere_material, sphere_material1]
+)
+
+light = Illumination.Light(
+    center=[2.0, 3.0, 2.0], radius=0.2, color=[1.0, 1.0, 1.0], strength=1.0
+)
+scene = Scene(objects=sphere, lights=[light], background_color=torch.tensor([0,0,0], device='cuda'))
+
+# --- Camera and sampler ---
+width, height = 1920,1080
+camera = Camera([0, 0, 5], [0, 0, 0], 60, width / height)
+sampler = CMJSampler()  # or HaltonSampler()
+
+# --- Generate rays with jitter (one sample per pixel) ---
+_, _, raybatch = camera.CreateRayBffr(width, height, mode='persp', sampler=sampler, sample=1, AA=True)
+
+# --- Trace rays ---
+img = raybatch.trace(scene, num_bounces=1, max_bounces=10)
+if isinstance(img, tuple):
+    img = img[0]
+img_np = img.reshape(height, width, 3).detach().cpu().numpy()
+
+# --- Display ---
+plt.imshow(np.clip(img_np, 0, 1))
+plt.title("Direct Illumination (Jittered, 0 sample)")
+plt.axis('off')
+plt.show()
 
