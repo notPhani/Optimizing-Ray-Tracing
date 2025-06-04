@@ -1,23 +1,87 @@
 import torch
 import time
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import numpy as np
 
 def normalize(v):
     return v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
 
+class CMJSampler:
+    def __init__(self):
+        pass
+
+    def _permute(self, x, n, seed):
+        # Kensler's reversible hash-based permutation
+        x = torch.as_tensor(x, device='cuda', dtype=torch.int64)
+        n = int(n)
+        mask = n - 1
+        if n & mask == 0:  # power of two
+            x = (x ^ seed) * 0xe170893d
+            x = (x ^ (x >> 16)) ^ (seed * 0x0929eb3f)
+            x = x & mask
+        else:
+            x = (x ^ seed) * 0xe170893d
+            x = (x ^ (x >> 16)) ^ (seed * 0x0929eb3f)
+            x = x % n
+        return x
+
+    def _randfloat(self, x, seed):
+        # Kensler's hash-to-float
+        x = torch.as_tensor(x, device='cuda', dtype=torch.int64)
+        x = x ^ seed
+        x = x ^ (x >> 17)
+        x = x ^ (x >> 10)
+        x = x * 0xb36534e5
+        x = x ^ (x >> 12)
+        x = x ^ (x >> 21)
+        x = x * 0x93fc4795
+        x = x ^ 0xdf6e307f
+        x = x ^ (x >> 17)
+        x = x * (1 | seed >> 18)
+        return (x.float() % 4294967808.0) / 4294967808.0
+
+    def generate(self, num_samples, sampler_number=0):
+        # CMJ grid size
+        m = int(torch.sqrt(torch.tensor(num_samples, dtype=torch.float32)).item())
+        n = (num_samples + m - 1) // m  # ceil division
+
+        # Sample indices
+        s = torch.arange(num_samples, device='cuda')
+
+        # Pattern seed
+        p = int(sampler_number) + 1  # never zero
+
+        # Permutations
+        sx = self._permute(s % m, m, p * 0xa511e9b3)
+        sy = self._permute(s // m, n, p * 0x63d83595)
+
+        # Jitter
+        jx = self._randfloat(s, p * 0xa399d265)
+        jy = self._randfloat(s, p * 0x711ad6a5)
+
+        # CMJ sample positions in [0,1)
+        x = (s % m + (sy + jx) / n) / m
+        y = (s // m + (sx + jy) / m) / n
+
+        # Center and scale to [-0.5, 0.5], then to [-0.4, 0.4] (optional)
+        pts = torch.stack([x, y], dim=-1) - 0.5
+        pts = pts * 0.8
+        return pts
+
+
 class HaltonSampler:
     def __init__(self, bases=(2, 3), permute=True, skip=20):
         self.bases = bases
         self.permutations = {
-            2: torch.tensor([0, 1], device='cuda'),      # Base 2 permutation
-            3: torch.tensor([0, 2, 1], device='cuda'),   # Base 3 permutation
+            2: torch.tensor([0, 1], device='cuda'),
+            3: torch.tensor([0, 2, 1], device='cuda'),
         } if permute else None
         self.skip = skip
 
-    def generate(self, num_samples):
+    def generate(self, num_samples, sample_number):
         samples = []
-        for i in range(self.skip, num_samples + self.skip):
+        for i in range(self.skip + sample_number, num_samples + self.skip + sample_number):
             sample = []
             for base in self.bases:
                 f = 1.0
@@ -26,13 +90,23 @@ class HaltonSampler:
                 while n > 0:
                     f /= base
                     rem = n % base
-                    if self.permutations: rem = self.permutations[base][rem]
+                    if self.permutations:
+                        rem = self.permutations[base][rem]
                     val += rem * f
                     n = n // base
-                sample.append(val - 0.5)  # Center around [-0.5, 0.5]
+                sample.append(val - 0.5)
             samples.append(sample)
-        return torch.tensor(samples, device='cuda') * 0.8  # Scale to [-0.4, 0.4]
+        pts = torch.tensor(samples, device='cuda') * 0.8  # Scale to [-0.4, 0.4]
 
+        # --- Add reproducible random jitter based on sample_number ---
+        rng = torch.Generator(device='cuda')
+        rng.manual_seed(sample_number)
+        # Critical jitter radius for Halton: 0.5 * delta0 / sqrt(N), delta0 ~ 0.45 [5]
+        jitter_radius = 0.5 * 0.45 / (num_samples ** 0.5)
+        jitter = (torch.rand(pts.shape, device=pts.device, generator=rng) - 0.5) * 2 * jitter_radius
+        pts = pts + jitter
+        return pts
+    
 class Lambertian:
     @staticmethod
     def offset(hit_normals, material_roughness, incoming_dirs):
@@ -212,12 +286,16 @@ class Camera:
         self.fov = torch.tensor(fov, dtype=torch.float32, device='cuda')
         self.aspect = torch.tensor(aspect, dtype=torch.float32, device='cuda')
 
-    def CreateRayBffr(self, width, height, mode, sampler, sample):
-        samples = sampler.generate()
+    def CreateRayBffr(self, width, height, mode, sampler, sample, AA=True):
+        samples = sampler.generate(width*height, sample)
+        jitter_grid = samples.reshape(height,width,2)
         # Pixel grid with Y going from 1 (top) to -1 (bottom)
         x = torch.linspace(-1, 1, width, device='cuda') * self.aspect
         y = torch.linspace(1, -1, height, device='cuda')  # FIXED: Top to bottom
         grid_x, grid_y = torch.meshgrid(x, y, indexing='xy')  # (W, H)
+        if AA:
+            grid_x = grid_x + jitter_grid[..., 0]
+            grid_y = grid_y + jitter_grid[..., 1]
 
         # Camera basis vectors (ensure looking along -Z)
         forward = self.look_at - self.origin
@@ -237,7 +315,7 @@ class Camera:
             directions = directions / directions.norm(dim=-1, keepdim=True)
             origins = self.origin.expand(directions.shape)
         
-        return RayBatch(origins.reshape(-1, 3), directions.reshape(-1, 3))
+        return grid_x.cpu(),grid_y.cpu(),RayBatch(origins.reshape(-1, 3), directions.reshape(-1, 3))
 
 class Illumination:
     class Light:
@@ -280,4 +358,5 @@ class Scene:
         self.lights = lights
     def interact(self, rayBatch):
         return self.objects.intersect(rayBatch)
+
 
