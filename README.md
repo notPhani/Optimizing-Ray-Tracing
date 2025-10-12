@@ -29,4 +29,5 @@ A hybrid rendering pipeline that combines classical ray/path tracing with learne
 - Effects: caustics, motion blur, extended BRDF/BSSRDF models.  
 - Tooling: richer GPU CI, artifacted reports, model cards, and reproducible seeds.
 
+<img src="./assets/snake.svg" alt="Contribution Snake" width="800">
 
