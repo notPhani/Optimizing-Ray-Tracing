@@ -29,14 +29,4 @@ A hybrid rendering pipeline that combines classical ray/path tracing with learne
 - Effects: caustics, motion blur, extended BRDF/BSSRDF models.  
 - Tooling: richer GPU CI, artifacted reports, model cards, and reproducible seeds.
 
-## Reproducibility & CI
-- GPU smoke tests on PRs to validate CUDA availability and a short guided/unguided run.  
-- Nightly benchmarks that produce CSV reports and thumbnails as artifacts for traceability.
 
-## Fun dashboard (optional)
-Add these badges/visuals to the profile or repo README after enabling the workflows:  
-- Metrics SVG (activity, languages, calendars, achievements).  
-- Contribution snake SVG (animated contributions graphic).  
-<!-- Replace the placeholders below once workflows create artifacts -->
-<!-- ![Metrics](PATH_TO_METRICS_SVG) -->
-<!-- ![Snake](PATH_TO_SNAKE_SVG) -->
